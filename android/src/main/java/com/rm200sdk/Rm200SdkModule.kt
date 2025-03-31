@@ -7,8 +7,10 @@ import android.content.Context
 import android.util.Log
 import com.facebook.react.bridge.*
 import java.util.*
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactContextBaseJavaModule
+import com.facebook.react.bridge.ReactMethod
 
-@ReactModule(name = Rm200SdkModule.NAME)
 class Rm200SdkModule(reactContext: ReactApplicationContext) :
     NativeRm200SdkSpec(reactContext) {
 
@@ -16,6 +18,8 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private var bluetoothGatt: BluetoothGatt? = null
     private val DEVICE_NAME = "TGI-PTID"
+    private var serviceUUID: UUID? = null
+    private var characteristicUUID: UUID? = null
 
     override fun getName(): String {
         return NAME
@@ -50,8 +54,14 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
                             if (status == BluetoothGatt.GATT_SUCCESS) {
                                 gatt?.services?.forEach { service ->
                                     Log.d(TAG, "Service discovered: ${service.uuid}")
+                                    
+                                    serviceUUID = service.uuid // Store first service UUID found
+                                    
                                     service.characteristics.forEach { characteristic ->
                                         Log.d(TAG, "Characteristic: ${characteristic.uuid}")
+                                        if (characteristicUUID == null) {
+                                            characteristicUUID = characteristic.uuid // Store first characteristic UUID found
+                                        }
                                     }
                                 }
                             } else {
@@ -66,9 +76,14 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun sendHexData(hexString: String, promise: Promise) {
+        if (serviceUUID == null || characteristicUUID == null) {
+            promise.reject("UUID_NOT_FOUND", "Service or Characteristic UUID not found yet")
+            return
+        }
+
         bluetoothGatt?.let { gatt ->
-            val service = gatt.services.find { it.uuid == UUID.fromString(YOUR_SERVICE_UUID) }
-            val characteristic = service?.characteristics?.find { it.uuid == UUID.fromString(YOUR_CHARACTERISTIC_UUID) }
+            val service = gatt.getService(serviceUUID)
+            val characteristic = service?.getCharacteristic(characteristicUUID)
 
             if (characteristic != null) {
                 val data = hexString.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
@@ -83,9 +98,14 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun subscribeToNotifications(promise: Promise) {
+        if (serviceUUID == null || characteristicUUID == null) {
+            promise.reject("UUID_NOT_FOUND", "Service or Characteristic UUID not found yet")
+            return
+        }
+
         bluetoothGatt?.let { gatt ->
-            val service = gatt.services.find { it.uuid == UUID.fromString(YOUR_SERVICE_UUID) }
-            val characteristic = service?.characteristics?.find { it.uuid == UUID.fromString(YOUR_CHARACTERISTIC_UUID) }
+            val service = gatt.getService(serviceUUID)
+            val characteristic = service?.getCharacteristic(characteristicUUID)
 
             if (characteristic != null && characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) {
                 gatt.setCharacteristicNotification(characteristic, true)
@@ -98,7 +118,5 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
 
     companion object {
         const val NAME = "Rm200Sdk"
-        private const val YOUR_SERVICE_UUID = "0000180F-0000-1000-8000-00805f9b34fb" // Update dynamically
-        private const val YOUR_CHARACTERISTIC_UUID = "00002A19-0000-1000-8000-00805f9b34fb" // Update dynamically
     }
 }
