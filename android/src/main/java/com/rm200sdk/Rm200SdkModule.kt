@@ -3,13 +3,9 @@ package com.rm200sdk
 import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
-import android.content.Context
 import android.util.Log
 import com.facebook.react.bridge.*
 import java.util.*
-import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.ReactContextBaseJavaModule
-import com.facebook.react.bridge.ReactMethod
 
 class Rm200SdkModule(reactContext: ReactApplicationContext) :
     NativeRm200SdkSpec(reactContext) {
@@ -17,7 +13,7 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
     private val TAG = "Rm200Sdk"
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private var bluetoothGatt: BluetoothGatt? = null
-    private val DEVICE_NAME = "TGI-PTID"
+    private val DEVICE_NAME = "ABC"
     private var serviceUUID: UUID? = null
     private var characteristicUUID: UUID? = null
 
@@ -26,7 +22,7 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
-    fun connectToDevice(promise: Promise) {
+    override fun connectToDevice(promise: Promise) {
         if (bluetoothAdapter == null) {
             promise.reject("BLUETOOTH_NOT_AVAILABLE", "Bluetooth is not supported on this device")
             return
@@ -39,43 +35,61 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
                 val device = result?.device
                 if (device != null && device.name == DEVICE_NAME) {
                     bluetoothLeScanner.stopScan(this)
+                    Log.d(TAG, "Found device: ${device.name}, connecting...")
                     device.connectGatt(reactApplicationContext, false, object : BluetoothGattCallback() {
                         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
                             if (newState == BluetoothProfile.STATE_CONNECTED) {
                                 bluetoothGatt = gatt
+                                Log.d(TAG, "Connected to $DEVICE_NAME, discovering services...")
                                 gatt?.discoverServices()
-                                promise.resolve("Connected to $DEVICE_NAME")
                             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                                Log.e(TAG, "Disconnected from device")
                                 promise.reject("DISCONNECTED", "Disconnected from $DEVICE_NAME")
+                            } else if (status != BluetoothGatt.GATT_SUCCESS) {
+                                promise.reject("CONNECTION_FAILED", "Failed to connect to $DEVICE_NAME")
                             }
                         }
 
                         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
                             if (status == BluetoothGatt.GATT_SUCCESS) {
+                                var foundCharacteristic = false
                                 gatt?.services?.forEach { service ->
                                     Log.d(TAG, "Service discovered: ${service.uuid}")
-                                    
-                                    serviceUUID = service.uuid // Store first service UUID found
-                                    
                                     service.characteristics.forEach { characteristic ->
-                                        Log.d(TAG, "Characteristic: ${characteristic.uuid}")
-                                        if (characteristicUUID == null) {
-                                            characteristicUUID = characteristic.uuid // Store first characteristic UUID found
+                                        Log.d(TAG, "Characteristic found: ${characteristic.uuid}")
+                                        if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
+                                            serviceUUID = service.uuid
+                                            characteristicUUID = characteristic.uuid
+                                            foundCharacteristic = true
                                         }
                                     }
                                 }
+
+                                if (foundCharacteristic) {
+                                    Log.d(TAG, "Service and characteristic UUIDs stored successfully")
+                                    promise.resolve("Connected and ready to send data")
+                                } else {
+                                    Log.e(TAG, "No writable characteristic found")
+                                    promise.reject("CHARACTERISTIC_NOT_FOUND", "No writable characteristic found on device")
+                                }
                             } else {
-                                Log.e(TAG, "Service discovery failed")
+                                Log.e(TAG, "Service discovery failed with status: $status")
+                                promise.reject("SERVICE_DISCOVERY_FAILED", "Failed to discover services")
                             }
                         }
                     })
                 }
             }
+
+            override fun onScanFailed(errorCode: Int) {
+                super.onScanFailed(errorCode)
+                promise.reject("SCAN_FAILED", "Bluetooth scan failed with error code $errorCode")
+            }
         })
     }
 
     @ReactMethod
-    fun sendHexData(hexString: String, promise: Promise) {
+    override fun sendHexData(hexString: String, promise: Promise) {
         if (serviceUUID == null || characteristicUUID == null) {
             promise.reject("UUID_NOT_FOUND", "Service or Characteristic UUID not found yet")
             return
@@ -86,32 +100,22 @@ class Rm200SdkModule(reactContext: ReactApplicationContext) :
             val characteristic = service?.getCharacteristic(characteristicUUID)
 
             if (characteristic != null) {
+                if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE == 0) {
+                    promise.reject("WRITE_NOT_SUPPORTED", "Characteristic does not support write operations")
+                    return
+                }
+
                 val data = hexString.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                 characteristic.value = data
-                gatt.writeCharacteristic(characteristic)
-                promise.resolve("Data sent: $hexString")
+                if (gatt.writeCharacteristic(characteristic)) {
+                    Log.d(TAG, "Data successfully sent: $hexString")
+                    promise.resolve("Data sent successfully")
+                } else {
+                    promise.reject("WRITE_FAILED", "Failed to send data")
+                }
             } else {
-                promise.reject("WRITE_FAILED", "Failed to send data")
-            }
-        } ?: promise.reject("NOT_CONNECTED", "No device connected")
-    }
-
-    @ReactMethod
-    fun subscribeToNotifications(promise: Promise) {
-        if (serviceUUID == null || characteristicUUID == null) {
-            promise.reject("UUID_NOT_FOUND", "Service or Characteristic UUID not found yet")
-            return
-        }
-
-        bluetoothGatt?.let { gatt ->
-            val service = gatt.getService(serviceUUID)
-            val characteristic = service?.getCharacteristic(characteristicUUID)
-
-            if (characteristic != null && characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) {
-                gatt.setCharacteristicNotification(characteristic, true)
-                promise.resolve("Subscribed to notifications")
-            } else {
-                promise.reject("NOTIFY_FAILED", "Failed to subscribe")
+                Log.e(TAG, "Characteristic not found for sending data")
+                promise.reject("CHARACTERISTIC_NOT_FOUND", "Writable characteristic not found")
             }
         } ?: promise.reject("NOT_CONNECTED", "No device connected")
     }
