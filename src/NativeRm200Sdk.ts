@@ -3,7 +3,6 @@ import { TurboModuleRegistry } from 'react-native';
 
 // ✅ Extend Spec with new methods
 export interface Spec extends TurboModule {
-  multiply(a: number, b: number): number;
   connectToDevice(): Promise<string>;
   sendHexData(hexString: string): Promise<string>;
 }
